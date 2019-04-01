@@ -1,0 +1,200 @@
+/*
+Collect combining samples and noun phrases from gt sentences,
+based on their parse trees.
+
+Input:
+
+fin: input json in the format of [{'raw': 'a dog is sitting on the sofa', 'id': image_id}, ...]
+fout: a list of how to combine noun phrases into each gt sentence, where 'idf' means an unique identifier for each partial result. '(1+2)' means this result is obtained by combining noun-phrases with idf 1 and 2.
+*/
+
+import org.json.simple.JSONArray;
+import org.json.simple.JSONObject;
+import org.json.simple.parser.JSONParser;
+import org.json.simple.parser.ParseException;
+
+import java.util.ArrayList;
+import java.util.List;
+import java.util.TreeSet;
+import java.util.Iterator;
+ 
+import java.io.FileReader;
+import java.io.FileWriter;
+import java.io.StringReader;
+
+import edu.stanford.nlp.ling.HasWord;
+import edu.stanford.nlp.ling.TaggedWord;
+import edu.stanford.nlp.parser.lexparser.LexicalizedParser;
+//import edu.stanford.nlp.parser.shiftreduce.ShiftReduceParser;
+import edu.stanford.nlp.process.DocumentPreprocessor;
+import edu.stanford.nlp.tagger.maxent.MaxentTagger;
+import edu.stanford.nlp.trees.Tree;
+
+public class ParseSentences {
+	public class Tuple<X, Y, Z, U> {
+		public final X x;
+		public final Y y;
+		public final Z z;
+		public final U u;
+		public Tuple(X x, Y y, Z z, U u) {
+			this.x = x;
+			this.y = y;
+			this.z = z;
+			this.u = u;
+		}
+	}
+
+	public static void main(String[] args) throws Exception {
+		int curArg = 0;
+		String fin = "";
+		String fout = "";
+		String modelPath = "edu/stanford/nlp/models/lexparser/englishPCFG.ser.gz";
+		//String modelPath = "edu/stanford/nlp/models/srparser/englishSR.beam.ser.gz";
+		String taggerPath = "edu/stanford/nlp/models/pos-tagger/english-bidirectional/english-bidirectional-distsim.tagger";
+		while (curArg < args.length) {
+			switch (args[curArg]) {
+				case "-fin":
+					fin = args[curArg + 1];
+					curArg += 2;
+					break;
+				case "-fout":
+					fout = args[curArg + 1];
+					curArg += 2;
+					break;
+				default:
+					System.err.println("Unknown option");
+					System.exit(1);
+			} 
+		}
+		System.err.println("Parsing sentences");		
+		ArrayList<Long> ids = new ArrayList<Long>();
+		ArrayList<String> sentences = new ArrayList<String>();
+		JSONParser json = new JSONParser();
+		JSONArray input;
+		input = (JSONArray) json.parse(new FileReader(fin));
+		for (Object o : input) {
+			JSONObject item = (JSONObject) o;
+			ids.add((Long)item.get("id"));
+			sentences.add((String) item.get("raw"));	
+		}
+
+		ArrayList<String> seqs = new ArrayList<String>();
+		ArrayList<String> orders = new ArrayList<String>();
+		MaxentTagger tagger = new MaxentTagger(taggerPath);
+		LexicalizedParser model = LexicalizedParser.loadModel(modelPath);
+		//ShiftReduceParser model = ShiftReduceParser.loadModel(modelPath);
+		ParseSentences collector = new ParseSentences();
+		JSONArray orderlist = new JSONArray();
+		
+		for (int idx = 0; idx < sentences.size(); ++idx) {
+			if (idx % 100 == 0)
+				System.err.println(idx + " / " + sentences.size());
+			String sentence = sentences.get(idx);
+			long id = ids.get(idx);	
+			DocumentPreprocessor tokenizer = new DocumentPreprocessor(new StringReader(sentence));
+			for (List<HasWord> tokenized_sentence : tokenizer) {
+				List<TaggedWord> tagged = tagger.tagSentence(tokenized_sentence);
+				Tree tree = model.apply(tagged);
+			//	System.out.println(tree);
+				collector.collect(null, tree, seqs, orders);
+				JSONObject obj = new JSONObject();
+				obj.put("sentid", new Long(id));
+				JSONArray idfs = new JSONArray();
+				for (int i = 0; i < orders.size(); ++i) {
+					JSONObject idf = new JSONObject();
+					idf.put("phrase", seqs.get(i));
+					idf.put("idf", orders.get(i));
+					idfs.add(idf);
+				}
+				obj.put("order", idfs);
+				orderlist.add(obj);
+				orders.clear();
+				seqs.clear();
+				break;
+			}
+		}
+			
+		FileWriter file = new FileWriter(fout);
+		file.write(orderlist.toJSONString());
+		file.flush();
+	}	
+
+	public String getLabel(Tree node) {
+		return node.label().value();
+	}
+
+	public Tuple<String, String, Boolean, String> collect(Tree parent, Tree node, ArrayList<String> seqs, ArrayList<String> orders) {
+		if (node.firstChild() == null) 
+			return new Tuple<String, String, Boolean, String>(getLabel(node), "", false, "");
+		int numChild = node.numChildren();
+		List<Tree> children = node.getChildrenAsList();
+		String label = getLabel(children.get(numChild - 1));
+		String mid = "";
+		String left = "";
+		String right = "";
+		String idf = "";
+		Tuple<String, String, Boolean, String> out; 
+		if (label.startsWith("NN")) {
+			for (int i = 0; i < numChild - 1; ++i) {
+				out = collect(node, children.get(i), seqs, orders);
+				assert !out.z;
+				assert out.y == "";
+				mid += mid == "" ? out.x : " " + out.x; 
+			}
+			out = collect(node, children.get(numChild - 1), seqs, orders);	
+			right = out.x;
+			String y = left;
+			if (mid != "")
+				y += y == "" ? mid : " " + mid;
+			y += y == "" ? right : " " + right;
+			idf = String.valueOf(orders.size() + 1);
+			orders.add(idf);
+			seqs.add(y);
+			return new Tuple<String, String, Boolean, String>("", y, true, idf);
+		}
+		mid = "";
+		left = "";
+		right = "";
+		idf = "";
+		String prefix = "";
+		boolean contain_noun = false;
+		for (Tree child : children) {
+			out = collect(node, child, seqs, orders);
+			if (out.z) {
+				if (contain_noun) {
+					String y = mid;
+					if (out.x != "")
+						y += y == "" ? out.x : " " + out.x;
+					seqs.add(left + "-" + y + "-" + out.y);
+					idf = "(" + idf + "+" + out.u + ")";
+					orders.add(idf);
+					y += y == "" ? out.y : " " + out.y;	
+					left += left == "" ? y : " " + y;
+					mid = "";
+				} else {
+					left = out.y;
+					if (out.x != "")
+						prefix += prefix == "" ? out.x : " " + out.x;
+					idf = out.u;
+				}
+			} else if (contain_noun)
+				mid += mid == "" ? out.x : " " + out.x;
+			else
+				prefix += prefix == "" ? out.x : " " + out.x;
+			contain_noun = contain_noun || out.z;
+		}
+		if (mid != "" && contain_noun) {
+			seqs.add(left + "-" + mid + "-");	
+			idf = "(" + idf + "+)";
+			orders.add(idf);
+			left += left == "" ? mid : " " + mid;
+		}
+		if (parent == null && prefix != "") {
+			seqs.add("-" + prefix + "-" + left);
+			idf = "(+" + idf + ")";
+			orders.add(idf);
+		}
+		return new Tuple<String, String, Boolean, String>(prefix, left, contain_noun, idf);		
+	}
+
+}
