@@ -1,0 +1,23 @@
+CUDA_VISIBLE_DEVICES=3 th feat_eval_bibeamsearch.lua -nounphrase_h5 data/coco_nounphrase_multilabel_len5_thres50.h5 \
+					-nounphrasepred_h5 nounphrase_preds/coco_len5_thres50_iter22100.h5 \
+					-imgfeat_h5 data/coco_resnet152_feats.h5 \
+					-nounphrase_encode_h5 nounphrase_encodes/coco_nounphrase_multilabel_len5_thres50_encode.h5 \
+					-simword_mapping data/coco_nouns_simwords3.json \
+					-vocab_mapping data/coco_embedding.h5.mappings.json \
+					-combination_order data/coco.orders.json \
+					-combination_h5 data/coco_embedding_softmax_thres50.h5 \
+					-stoper checkpoints_correctsplits/model_topdownstoper_iter97720.t7 \
+					-lm checkpoints_better/model_connectingmodule_thres50_iter205152.t7 \
+					-dataset eval_coco_test \
+					-nounphrase_usegt 0 \
+					-combination_usegt 0 \
+					-id test \
+					-split test \
+					-num_sample 5000 \
+					-verbose 1 \
+					-thres_nounphrase 0.2 \
+					-thres_embedding 0.002 \
+					-beam_size 10 \
+					-mid_beam_size 1 \
+					-num_nounphrases 20
+
